@@ -158,7 +158,6 @@ func (rl *RotateLogs) getWriter_nolock(length int) (io.Writer, error) {
 			if err != nil { // no such file or directory
 				break
 			}
-			fmt.Println(fi.Size(), length, rl.maxSize)
 			if fi.Size()+int64(length) < rl.maxSize {
 				break
 			}
