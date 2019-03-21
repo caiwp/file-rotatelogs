@@ -3,7 +3,7 @@ package rotatelogs
 import (
 	"time"
 
-	"github.com/lestrrat-go/file-rotatelogs/internal/option"
+	"github.com/caiwp/file-rotatelogs/internal/option"
 )
 
 const (
@@ -13,6 +13,7 @@ const (
 	optkeyMaxAge        = "max-age"
 	optkeyRotationTime  = "rotation-time"
 	optkeyRotationCount = "rotation-count"
+	optkeyMaxSize       = "max-size"
 )
 
 // WithClock creates a new Option that sets a clock
@@ -71,4 +72,8 @@ func WithRotationCount(n uint) Option {
 // Currently `FileRotated` event is supported
 func WithHandler(h Handler) Option {
 	return option.New(optkeyHandler, h)
+}
+
+func WithMaxSize(n int64) Option {
+	return option.New(optkeyMaxSize, n)
 }

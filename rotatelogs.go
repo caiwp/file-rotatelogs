@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	strftime "github.com/lestrrat-go/strftime"
+	"github.com/lestrrat-go/strftime"
 	"github.com/pkg/errors"
 )
 
@@ -41,6 +41,7 @@ func New(p string, options ...Option) (*RotateLogs, error) {
 	var linkName string
 	var maxAge time.Duration
 	var handler Handler
+	var maxSize int64
 
 	for _, o := range options {
 		switch o.Name() {
@@ -62,6 +63,8 @@ func New(p string, options ...Option) (*RotateLogs, error) {
 			rotationCount = o.Value().(uint)
 		case optkeyHandler:
 			handler = o.Value().(Handler)
+		case optkeyMaxSize:
+			maxSize = o.Value().(int64)
 		}
 	}
 
@@ -83,6 +86,7 @@ func New(p string, options ...Option) (*RotateLogs, error) {
 		pattern:       pattern,
 		rotationTime:  rotationTime,
 		rotationCount: rotationCount,
+		maxSize:       maxSize,
 	}, nil
 }
 
@@ -119,7 +123,7 @@ func (rl *RotateLogs) Write(p []byte) (n int, err error) {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
-	out, err := rl.getWriter_nolock(false, false)
+	out, err := rl.getWriter_nolock(len(p))
 	if err != nil {
 		return 0, errors.Wrap(err, `failed to acquite target io.Writer`)
 	}
@@ -128,37 +132,45 @@ func (rl *RotateLogs) Write(p []byte) (n int, err error) {
 }
 
 // must be locked during this operation
-func (rl *RotateLogs) getWriter_nolock(bailOnRotateFail, useGenerationalNames bool) (io.Writer, error) {
+func (rl *RotateLogs) getWriter_nolock(length int) (io.Writer, error) {
 	generation := rl.generation
 	previousFn := rl.curFn
 	// This filename contains the name of the "NEW" filename
 	// to log to, which may be newer than rl.currentFilename
 	filename := rl.genFilename()
-	if previousFn != filename {
-		generation = 0
-	} else {
-		if !useGenerationalNames {
-			// nothing to do
-			return rl.outFh, nil
+
+	if rl.maxSize == 0 && previousFn == filename {
+		// nothing to do
+		return rl.outFh, nil
+	}
+
+	if rl.maxAge != 0 {
+		if int64(length) > rl.maxSize {
+			return nil, errors.Errorf("write length %d exceeds maximum file size %d", length, rl.maxSize)
 		}
-		// This is used when we *REALLY* want to rotate a log.
-		// instead of just using the regular strftime pattern, we
-		// create a new file name using generational names such as
-		// "foo.1", "foo.2", "foo.3", etc
+
+		name := filename
 		for {
-			generation++
-			name := fmt.Sprintf("%s.%d", filename, generation)
-			if _, err := os.Stat(name); err != nil {
-				filename = name
+			if generation != 0 {
+				name = fmt.Sprintf("%s.%d", filename, generation)
+			}
+			fi, err := os.Stat(name)
+			if err != nil { // no such file or directory
 				break
 			}
+			fmt.Println(fi.Size(), length, rl.maxSize)
+			if fi.Size()+int64(length) < rl.maxSize {
+				break
+			}
+			generation++
 		}
+		filename = name
 	}
+
 	// make sure the dir is existed, eg:
 	// ./foo/bar/baz/hello.log must make sure ./foo/bar/baz is existed
-	dirname := filepath.Dir(filename)
-	if err := os.MkdirAll(dirname, 0755); err != nil {
-		return nil, errors.Wrapf(err, "failed to create directory %s", dirname)
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		return nil, errors.Wrapf(err, "failed to create directory")
 	}
 	// if we got here, then we need to create a file
 	fh, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -168,19 +180,6 @@ func (rl *RotateLogs) getWriter_nolock(bailOnRotateFail, useGenerationalNames bo
 
 	if err := rl.rotate_nolock(filename); err != nil {
 		err = errors.Wrap(err, "failed to rotate")
-		if bailOnRotateFail {
-			// Failure to rotate is a problem, but it's really not a great
-			// idea to stop your application just because you couldn't rename
-			// your log.
-			//
-			// We only return this error when explicitly needed (as specified by bailOnRotateFail)
-			//
-			// However, we *NEED* to close `fh` here
-			if fh != nil { // probably can't happen, but being paranoid
-				fh.Close()
-			}
-			return nil, err
-		}
 		fmt.Fprintf(os.Stderr, "%s\n", err.Error())
 	}
 
@@ -224,22 +223,6 @@ func (g *cleanupGuard) Enable() {
 }
 func (g *cleanupGuard) Run() {
 	g.fn()
-}
-
-// Rotate forcefully rotates the log files. If the generated file name
-// clash because file already exists, a numeric suffix of the form
-// ".1", ".2", ".3" and so forth are appended to the end of the log file
-//
-// Thie method can be used in conjunction with a signal handler so to
-// emulate servers that generate new log files when they receive a
-// SIGHUP
-func (rl *RotateLogs) Rotate() error {
-	rl.mutex.Lock()
-	defer rl.mutex.Unlock()
-	if _, err := rl.getWriter_nolock(true, true); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (rl *RotateLogs) rotate_nolock(filename string) error {

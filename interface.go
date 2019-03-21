@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	strftime "github.com/lestrrat-go/strftime"
+	"github.com/lestrrat-go/strftime"
 )
 
 type Handler interface {
@@ -45,6 +45,7 @@ type RotateLogs struct {
 	pattern       *strftime.Strftime
 	rotationTime  time.Duration
 	rotationCount uint
+	maxSize       int64
 }
 
 // Clock is the interface used by the RotateLogs
